@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools >= 61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+dependencies = ["Pillow", "click", "setuptools"]
+name = "steganography_tool"
+version = "0.0.1"
+authors = [
+    { name = "Topaz", email = "example@mail.ru" }
+]
+description = "steganography_tool"
+requires-python = ">=3.9"
+
+[project.scripts]
+steganography-tool = "steganography_tool.cli:cli"
+
+[tool.setuptools.package-data]
+steganography_tool = ["*.png"]

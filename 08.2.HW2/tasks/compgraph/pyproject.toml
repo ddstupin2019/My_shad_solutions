@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools >= 61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+dependencies = ['click', 'pandas', 'matplotlib', 'setuptools']
+name = "compgraph"
+version = "0.0.1"
+authors = [
+    { name = "Topaz", email = "topazstupid2090@gmail.ru" }
+]
+description = "compgraph"
+requires-python = ">=3.9"
+
+[project.scripts]
+compgraph_cli = "compgraph.cli:cli"
+
+
+[tool.setuptools.packages.find]
+include = ["compgraph*"]
+exclude = ["resources*"]
