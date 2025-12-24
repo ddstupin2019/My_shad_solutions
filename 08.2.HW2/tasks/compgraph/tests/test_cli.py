@@ -196,7 +196,7 @@ def test_yandex_maps_cli(runner: CliRunner) -> None:
 
     try:
         result = runner.invoke(
-            cli, ['yandex-maps', str(times_file), str(lengths_file), str(output_file), '--plot', '--plot-file', str(plot_file)])
+            cli, ['yandex-maps', str(lengths_file), str(times_file), str(output_file), '--plot', '--plot-file', str(plot_file)])
 
         print(result.exception)
         print(result.exc_info)

@@ -20,12 +20,10 @@ def cli() -> None:
     pass
 
 
-def _read_data(input_file: Path) -> operations.TRowsIterable:
+def _read_data(input_file: Path) -> list[operations.TRow]:
     """Read data from file line by line as JSON"""
     with open(input_file, 'r') as f:
-        for line in f:
-            if line.strip():
-                yield json.loads(line)
+        return [json.loads(line) for line in f]
 
 
 def _write_data(rows: operations.TRowsIterable, file_name: Path) -> None:
@@ -41,7 +39,7 @@ def word_count(input_file: Path, output_file: Path) -> None:
     """Word_count cli"""
     graph: Graph = word_count_graph(input_stream_name='docs')
 
-    tmp = list(_read_data(input_file))
+    tmp = _read_data(input_file)
     data: operations.TRowsIterable = iter(tmp)
     result: operations.TRowsIterable = graph.run(docs=lambda: data)
     _write_data(result, output_file)
@@ -56,7 +54,7 @@ def inverted_index(input_file: Path, output_file: Path) -> None:
     """Inverted index cli"""
     graph: Graph = inverted_index_graph(input_stream_name='text')
 
-    data: list[operations.TRow] = list(_read_data(input_file))
+    data: list[operations.TRow] = _read_data(input_file)
     result: operations.TRowsIterable = graph.run(text=lambda: iter(data))
     _write_data(result, output_file)
 
@@ -70,7 +68,7 @@ def pmi(input_file: Path, output_file: Path) -> None:
     """Calculate PMI cli"""
     graph: Graph = pmi_graph(input_stream_name='text')
 
-    data: list[operations.TRow] = list(_read_data(input_file))
+    data: list[operations.TRow] = _read_data(input_file)
     result: operations.TRowsIterable = graph.run(text=lambda: iter(data))
     _write_data(result, output_file)
 
@@ -95,12 +93,12 @@ def yandex_maps(travel_times_file: Path, road_graph_file: Path,
         weekday_result_column='weekday', hour_result_column='hour', speed_result_column='speed'
     )
 
-    travel_data: list[operations.TRow] = list(_read_data(travel_times_file))
-    road_data: list[operations.TRow] = list(_read_data(road_graph_file))
+    travel_data: list[operations.TRow] = _read_data(travel_times_file)
+    road_data: list[operations.TRow] = _read_data(road_graph_file)
 
     result: operations.TRowsIterable = graph.run(
-        travel_time=lambda: iter(travel_data),
-        edge_length=lambda: iter(road_data)
+        travel_time=lambda: iter(road_data),
+        edge_length=lambda: iter(travel_data)
     )
     tmp = list(result)
     if plot:

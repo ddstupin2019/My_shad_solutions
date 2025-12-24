@@ -5,6 +5,7 @@ import typing as tp
 import pytest
 from pytest import approx
 from compgraph import operations as ops
+from compgraph import custom_operations as custom_ops
 
 
 class _Key:
@@ -27,7 +28,7 @@ class MapCase:
 
 MAP_CASES = [
     MapCase(
-        mapper=ops.CalculateDistance('start', 'end', 'dist'),
+        mapper=custom_ops.CalculateDistance('start', 'end', 'dist'),
         data=[
             {'start': [37.84870228730142, 55.73853974696249], 'end': [37.8490418381989, 55.73832445777953],
                 'test_id': 1},
@@ -43,7 +44,7 @@ MAP_CASES = [
         cmp_keys=('test_id', 'dict')
     ),
     MapCase(
-        mapper=ops.CalculateTime(
+        mapper=custom_ops.CalculateTime(
             'enter_time', 'leave_time', 'week', 'hour', 'sec'),
         data=[
             {'leave_time': '20171020T112238.723000', 'enter_time': '20171020T112237.427000',
@@ -61,7 +62,7 @@ MAP_CASES = [
         cmp_keys=('test_id', 'week', 'hour', 'sec')
     ),
     MapCase(
-        mapper=ops.CalculateSpeed('dist', 'time', 'speed'),
+        mapper=custom_ops.CalculateSpeed('dist', 'time', 'speed'),
         data=[
             {'test_id': 1, 'time': 1.296, 'dist': 32.023},
             {'test_id': 2, 'time': 7.488, 'dist': 45.464},
@@ -111,7 +112,7 @@ class ReduceCase:
 
 REDUCE_CASES = [
     ReduceCase(
-        reducer=ops.CountRow('rez'),
+        reducer=custom_ops.CountRow('rez'),
         reducer_keys=(()),
         data=[
             {'match_id': 1, 'player_id': 1, 'rank': 42},
@@ -132,7 +133,7 @@ REDUCE_CASES = [
         reduce_ground_truth_items=(0,)
     ),
     ReduceCase(
-        reducer=ops.Mean(column='score'),
+        reducer=custom_ops.Mean(column='score'),
         reducer_keys=('match_id',),
         data=[
             {'match_id': 1, 'player_id': 1, 'score': 42},
@@ -146,7 +147,7 @@ REDUCE_CASES = [
         reduce_ground_truth_items=(0,)
     ),
     ReduceCase(
-        reducer=ops.Tf_idf('f', 'l', 'c', 'score'),
+        reducer=custom_ops.Tf_idf('f', 'l', 'c', 'score'),
         reducer_keys=('match_id',),
         data=[
             {'match_id': 1, 'f': 0.43, 'c': 4, 'l': 5},
@@ -161,7 +162,7 @@ REDUCE_CASES = [
         reduce_ground_truth_items=(0, 1)
     ),
     ReduceCase(
-        reducer=ops.Pmi('f', 'a', 'score'),
+        reducer=custom_ops.Pmi('f', 'a', 'score'),
         reducer_keys=('match_id',),
         data=[
             {'match_id': 1, 'f': 0.3, 'a': 0.5},

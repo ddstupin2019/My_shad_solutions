@@ -1,5 +1,6 @@
 import copy
 from compgraph import operations
+from compgraph import custom_operations as custom_ops
 from compgraph.graph import Graph
 
 
@@ -28,21 +29,21 @@ def inverted_index_graph(input_stream_name: str, doc_column: str = 'doc_id', tex
 
     len_document_graph: Graph = Graph.graph_from_iter(input_stream_name) \
         .sort([doc_column]) \
-        .reduce(operations.CountRow(len_document_column), [])
+        .reduce(custom_ops.CountRow(len_document_column), [])
 
     col_doc_whith_word_graph: Graph = copy.deepcopy(words_graph) \
         .sort([text_column, doc_column]) \
         .reduce(operations.FirstReducer(), [text_column, doc_column]) \
         .reduce(operations.Count(col_doc_with_word_column), [text_column])
 
-    result_graph: Graph = copy.deepcopy(words_graph) \
+    result_graph: Graph = words_graph \
         .sort([doc_column, text_column]) \
         .reduce(operations.TermFrequency(text_column, freq_word_column), [doc_column]) \
         .sort([text_column]) \
-        .join(operations.InnerJoiner(), copy.deepcopy(col_doc_whith_word_graph), [text_column]) \
-        .join(operations.InnerJoiner(), copy.deepcopy(len_document_graph), []) \
+        .join(operations.InnerJoiner(), col_doc_whith_word_graph, [text_column]) \
+        .join(operations.InnerJoiner(), len_document_graph, []) \
         .sort([text_column, doc_column]) \
-        .reduce(operations.Tf_idf(freq_word_column, len_document_column, col_doc_with_word_column, result_column),
+        .reduce(custom_ops.Tf_idf(freq_word_column, len_document_column, col_doc_with_word_column, result_column),
                 [text_column, doc_column]) \
         .sort([text_column]) \
         .reduce(operations.TopN(result_column, 3), [text_column])
@@ -68,20 +69,20 @@ def pmi_graph(input_stream_name: str, doc_column: str = 'doc_id', text_column: s
 
     words_graph = words_graph \
         .sort([text_column, doc_column]) \
-        .join(operations.InnerJoiner(), copy.deepcopy(filter_graph), [text_column, doc_column]) \
+        .join(operations.InnerJoiner(), filter_graph, [text_column, doc_column]) \
         .map(operations.Filter(lambda row: (len(row[text_column]) > 4) and row[count_word_column] >= 2))
 
     all_freq_graph = copy.deepcopy(words_graph) \
         .sort([text_column]) \
         .reduce(operations.TermFrequency(text_column, freq_word_all_column), []) \
 
-    result_graph: Graph = copy.deepcopy(words_graph) \
+    result_graph: Graph = words_graph \
         .sort([doc_column, text_column]) \
         .reduce(operations.TermFrequency(text_column, freq_word_column), [doc_column]) \
         .sort([text_column]) \
-        .join(operations.InnerJoiner(), copy.deepcopy(all_freq_graph), [text_column]) \
+        .join(operations.InnerJoiner(), all_freq_graph, [text_column]) \
         .sort([text_column, doc_column]) \
-        .reduce(operations.Pmi(freq_word_column, freq_word_all_column, result_column), [text_column, doc_column]) \
+        .reduce(custom_ops.Pmi(freq_word_column, freq_word_all_column, result_column), [text_column, doc_column]) \
         .sort([doc_column]) \
         .reduce(operations.TopN(result_column, 10), [doc_column]) \
         .sort([doc_column])
@@ -100,15 +101,15 @@ def yandex_maps_graph(input_stream_name_time: str, input_stream_name_length: str
 
     dist_graph = Graph.graph_from_iter(input_stream_name_length) \
         .sort([edge_id_column]) \
-        .map(operations.CalculateDistance(start_coord_column, end_coord_column, dist_column))
+        .map(custom_ops.CalculateDistance(start_coord_column, end_coord_column, dist_column))
 
     result_graph = Graph.graph_from_iter(input_stream_name_time) \
         .sort([edge_id_column]) \
-        .map(operations.CalculateTime(enter_time_column, leave_time_column,
+        .map(custom_ops.CalculateTime(enter_time_column, leave_time_column,
                                       weekday_result_column, hour_result_column, time_second_column)) \
-        .join(operations.InnerJoiner(), copy.deepcopy(dist_graph), [edge_id_column]) \
-        .map(operations.CalculateSpeed(dist_column, time_second_column, speed_result_column)) \
+        .join(operations.InnerJoiner(), dist_graph, [edge_id_column]) \
+        .map(custom_ops.CalculateSpeed(dist_column, time_second_column, speed_result_column)) \
         .sort([weekday_result_column, hour_result_column]) \
-        .reduce(operations.Mean(speed_result_column), [weekday_result_column, hour_result_column])
+        .reduce(custom_ops.Mean(speed_result_column), [weekday_result_column, hour_result_column])
 
     return result_graph

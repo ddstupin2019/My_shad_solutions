@@ -46,3 +46,4 @@ class ExternalSort(Operation):
             row_count_after += 1
         assert row_count_before == row_count_after
         process.join()
+
