@@ -95,13 +95,15 @@ class Frame:
             except BaseException as e:
                 self.nam_instruction = tmp
 
-                handler, depth = self.find_exception_handler(e)
+                handler, depth, lasti = self.find_exception_handler(e)
                 if handler is None:
                     raise
                 self.last_exception = e  # type: ignore
                 if len(self.data_stack) > depth:  # type: ignore
                     self.data_stack = self.data_stack[:depth]
 
+                if lasti:
+                    self.push(tmp)
                 self.push(e)
 
                 self.jump(handler)
@@ -116,8 +118,8 @@ class Frame:
         offset = self.nam_instruction
         for entry in dis.Bytecode(self.code).exception_entries:  # type: ignore
             if entry.start <= offset < entry.end:
-                return entry.target, entry.depth
-        return None, None
+                return entry.target, entry.depth, entry.lasti
+        return None, None, False
 
     def extended_arg_op(self, argval, arg):
         self._extended_arg = (self._extended_arg << 8) | arg
@@ -153,12 +155,9 @@ class Frame:
             self.push(item)
 
     def push_exc_info_op(self, argval, arg):
-        exc = self.last_exception
-        if exc is None:
-            self.push(None)
-            return
-
-        self.push(exc)
+        new_exc = self.pop()
+        self.push(None)
+        self.push(new_exc)
 
     def check_exc_match_op(self, argval, arg):
         match_type = self.pop()
@@ -168,7 +167,8 @@ class Frame:
         self.push(result)
 
     def pop_except_op(self, argval, arg):
-        self.last_exception = None
+        prev_exc = self.pop()
+        self.last_exception = prev_exc
 
     def reraise_op(self, argval, arg):
         raise self.top()
@@ -178,14 +178,12 @@ class Frame:
         self.locals[argval[1]] = self.pop()
 
     def load_closure_op(self, argval, arg):
-        """
-        LOAD_CLOSURE(i): Загружает cell из closure по индексу.
-        """
-        if arg >= len(self._closure):
-            raise NameError(f"closure index {arg} out of range")
-
-        cell = self._closure[arg]
-        self.push(cell)
+        if argval in self.locals:
+            self.push(self.locals[argval])
+        elif arg < len(self._closure):
+            self.push(self._closure[arg])
+        else:
+            raise NameError(f"closure variable '{argval}' not found")
 
     def before_with_op(self, argval, arg):
 
@@ -199,15 +197,29 @@ class Frame:
         self.push(exit)
         self.push(result)
 
+    def before_async_with_op(self, argval, arg):
+        manager = self.pop()
+        aexit = manager.__aexit__
+        aenter_coro = manager.__aenter__()
+        self.push(aexit)
+        self.push(aenter_coro)
+
     def with_except_start_op(self, argval, arg):
         ex = self.data_stack[-1]
-        exit_func = self.data_stack[-3]
+        exit_func = self.data_stack[-4]
         result = exit_func(type(ex), ex, ex.__traceback__)
         self.push(result)
 
     def jump(self, jump):
         """Move the bytecode pointer to `jump`, so it will execute next."""
         self.nam_instruction = jump
+
+    def get_awaitable_op(self, argval, arg):
+        obj = self.pop()
+        if hasattr(obj, '__await__'):
+            self.push(obj.__await__())
+        else:
+            self.push(obj)
 
     def get_yield_from_iter_op(self, argval, arg):
         tos = self.pop()
@@ -233,7 +245,6 @@ class Frame:
             self.push(result)
 
         except StopIteration as e:
-            self.pop()
             self.push(e.value)
             self.jump(argval)
 
@@ -246,12 +257,18 @@ class Frame:
 
         elif argc == 1:
             exception = self.pop()
+            if isinstance(exception, type) and issubclass(exception, BaseException):
+                exception = exception()
             self.last_exception = exception
             raise exception
 
         elif argc == 2:
             cause = self.pop()
             exception = self.pop()
+            if isinstance(exception, type) and issubclass(exception, BaseException):
+                exception = exception()
+            if isinstance(cause, type) and issubclass(cause, BaseException):
+                cause = cause()
             if exception is not None and cause is not None:
                 exception.__cause__ = cause
             self.last_exception = exception
@@ -309,8 +326,23 @@ class Frame:
             https://docs.python.org/release/3.13.7/library/dis.html#opcode-CALL
         """
         arguments = self.popn(argval)
-        null_or_self = self.pop()
-        func = self.pop()
+        first = self.pop()
+        second = self.pop()
+
+        # Three stack layouts possible:
+        # LOAD_GLOBAL flag: [..., callable, NULL, args]  -> first=NULL, second=callable
+        # PUSH_NULL+LOAD:   [..., NULL, callable, args]  -> first=callable, second=NULL
+        # Decorator/no-NULL:[..., callable, extra_arg]   -> first=extra_arg, second=callable
+        if first is NULL:
+            func = second
+            null_or_self = first
+        elif second is NULL:
+            func = first
+            null_or_self = second
+        else:
+            # Neither NULL: second (deeper) is callable, first is extra arg (e.g. decorator pattern)
+            func = second
+            null_or_self = first
 
         if null_or_self is not NULL:
             arguments = [null_or_self] + arguments
@@ -325,8 +357,18 @@ class Frame:
 
         kw_values = self.popn(num_kw)
         pos_args = self.popn(num_pos)
-        null_or_self = self.pop()
-        callable_obj = self.pop()
+        first = self.pop()
+        second = self.pop()
+
+        if first is NULL:
+            callable_obj = second
+            null_or_self = first
+        elif second is NULL:
+            callable_obj = first
+            null_or_self = second
+        else:
+            callable_obj = second
+            null_or_self = first
 
         if null_or_self is not NULL:
             pos_args = [null_or_self] + pos_args
@@ -459,8 +501,12 @@ class Frame:
             self.push(NULL)
 
     def unpack_sequence_op(self, argval: int, arg):
-        assert (len(self.top()) == argval)
-        tmp = self.pop()
+        tmp = list(self.pop())
+        n = len(tmp)
+        if n < argval:
+            raise ValueError(f"not enough values to unpack (expected {argval}, got {n})")
+        elif n > argval:
+            raise ValueError(f"too many values to unpack (expected {argval})")
         for i in tmp[::-1]:
             self.push(i)
 
@@ -584,6 +630,8 @@ class Frame:
         elif arg == 0x02:
             func.__kwdefaults__ = value
         elif arg == 0x04:
+            if isinstance(value, tuple):
+                value = {value[i]: value[i + 1] for i in range(0, len(value), 2)}
             func.__annotations__ = value
         elif arg == 0x08:
             func.__closure__ = value
@@ -620,31 +668,17 @@ class Frame:
         cell.cell_contents = value
 
     def delete_deref_op(self, argval, arg):
-        """
-        DELETE_DEREF(i): Удаляет значение из cell по индексу i в co_freevars.
-
-        argval — индекс в co_freevars
-        """
-        if argval >= len(self.code.co_freevars):
-            raise NameError(f"free variable index {argval} out of range")
-
-        var_name = self.code.co_freevars[argval]
-
+        var_name = argval
         cell = self.locals.get(var_name)
-
         if cell is None:
-            if self._closure and argval < len(self._closure):
-                cell = self._closure[argval]
+            if self._closure and arg < len(self._closure):
+                cell = self._closure[arg]
             else:
-                raise NameError(
-                    f"free variable '{var_name}' referenced before assignment"
-                )
+                raise NameError(f"free variable '{var_name}' referenced before assignment")
         try:
             del cell.cell_contents
         except AttributeError:
-            raise NameError(
-                f"free variable '{var_name}' referenced before assignment"
-            )
+            raise NameError(f"free variable '{var_name}' referenced before assignment")
 
     def store_subscr_op(self, argval, arg):
         key = self.pop()
@@ -860,13 +894,31 @@ class Frame:
                 self.globals[name] = getattr(module, name)
             result = None
         elif arg == 3:
-            result = argument.value if isinstance(
-                argument, StopIteration) else argument
+            if isinstance(argument, StopIteration):
+                exc = RuntimeError("generator raised StopIteration")
+                exc.__cause__ = argument
+                result = exc
+            else:
+                result = argument
         elif arg == 5:
             result = argument
         elif arg == 6:
             result = tuple(argument) if isinstance(
                 argument, list) else argument
+        elif arg == 11:
+            name, type_params, compute_value = argument
+
+            class _LazyTypeAlias:
+                def __init__(self, _name, _type_params, _compute):
+                    self.__name__ = _name
+                    self.__type_params__ = _type_params if _type_params else ()
+                    self._compute = _compute
+
+                @property
+                def __value__(self):
+                    return self._compute()
+
+            result = _LazyTypeAlias(name, type_params, compute_value)
         elif arg == 0:
             raise ValueError(f"CALL_INTRINSIC_1: invalid intrinsic {arg}")
         else:
@@ -887,6 +939,7 @@ class Frame:
             https://docs.python.org/release/3.13.7/library/dis.html#opcode-RETURN_VALUE
         """
         self.return_value = self.pop()
+        self.nam_instruction = -1
 
     def pop_top_op(self, argval: tp.Any, arg) -> None:
         """
@@ -914,11 +967,18 @@ class Frame:
         else:
             kwargs = {}
         args = self.pop()
-        null_or_self = None
-        if self.data_stack and self.data_stack[-1] is NULL:
-            null_or_self = self.pop()
+        first = self.pop()
+        second = self.pop()
 
-        func = self.pop()
+        if first is NULL:
+            func = second
+            null_or_self = first
+        elif second is NULL:
+            func = first
+            null_or_self = second
+        else:
+            func = second
+            null_or_self = first
 
         if null_or_self is not NULL:
             if isinstance(args, tuple):
@@ -935,6 +995,21 @@ class Frame:
     def nop_op(self, argval, arg):
         pass
 
+    def cleanup_throw_op(self, argval, arg):
+        exc = self.pop()
+        raise exc
+
+    def end_async_for_op(self, argval, arg):
+        self.pop()
+
+    def get_aiter_op(self, argval, arg):
+        obj = self.pop()
+        self.push(obj.__aiter__())
+
+    def get_anext_op(self, argval, arg):
+        aiter = self.top()
+        self.push(aiter.__anext__())
+
     def jump_forward_op(self, argval, arg):
         self.jump(argval)
 
@@ -950,6 +1025,16 @@ class Frame:
         if self.pop() is None:
             self.jump(argval)
 
+    def setup_annotations_op(self, argval, arg) -> None:
+        if '__annotations__' not in self.locals:
+            self.locals['__annotations__'] = {}
+
+    def store_annotation_op(self, argval: str, arg) -> None:
+        annotation = self.pop()
+        if '__annotations__' not in self.locals:
+            self.locals['__annotations__'] = {}
+        self.locals['__annotations__'][argval] = annotation
+
     def store_name_op(self, argval: str, arg) -> None:
         """
         Operation description:
@@ -962,6 +1047,144 @@ class Frame:
         const = self.pop()
         self.globals[argval] = const
 
+    def delete_global_op(self, argval: str, arg) -> None:
+        if argval not in self.globals:
+            raise NameError(f"name '{argval}' is not defined")
+        del self.globals[argval]
+
+    def load_locals_op(self, argval, arg) -> None:
+        self.push(self.locals)
+
+    def load_from_dict_or_deref_op(self, argval, arg) -> None:
+        d = self.pop()
+        if argval in d:
+            val = d[argval]
+            if hasattr(val, 'cell_contents'):
+                self.push(val.cell_contents)
+            else:
+                self.push(val)
+        else:
+            cell = self.locals.get(argval)
+            if cell is None and self._closure and arg < len(self._closure):
+                cell = self._closure[arg]
+            if cell is None:
+                raise NameError(f"name '{argval}' is not defined")
+            self.push(cell.cell_contents)
+
+    def load_from_dict_or_globals_op(self, argval, arg) -> None:
+        d = self.pop()
+        if argval in d:
+            self.push(d[argval])
+        elif argval in self.globals:
+            self.push(self.globals[argval])
+        elif argval in self.builtins:
+            self.push(self.builtins[argval])
+        else:
+            raise NameError(f"name '{argval}' is not defined")
+
+    def load_assertion_error_op(self, argval, arg) -> None:
+        self.push(AssertionError)
+
+    def format_with_spec_op(self, argval, arg) -> None:
+        spec = self.pop()
+        value = self.pop()
+        self.push(value.__format__(spec))
+
+    def load_super_attr_op(self, argval, arg) -> None:
+        self_ = self.pop()
+        cls = self.pop()
+        super_callable = self.pop()
+        sup = super_callable(cls, self_)
+        attr = getattr(sup, argval)
+        if arg & 1:
+            self.push(attr)
+            self.push(NULL)
+        else:
+            self.push(attr)
+
+    def match_sequence_op(self, argval, arg) -> None:
+        import collections.abc
+        subject = self.top()
+        self.push(
+            isinstance(subject, collections.abc.Sequence)
+            and not isinstance(subject, (str, bytes, bytearray))
+        )
+
+    def match_mapping_op(self, argval, arg) -> None:
+        import collections.abc
+        self.push(isinstance(self.top(), collections.abc.Mapping))
+
+    def get_len_op(self, argval, arg) -> None:
+        self.push(len(self.top()))
+
+    def match_keys_op(self, argval, arg) -> None:
+        # Per CPython docs: neither TOS (keys) nor TOS1 (subject) is popped
+        keys = self.top()               # peek at TOS
+        subject = self.data_stack[-2]   # peek at TOS1
+        try:
+            values = tuple(subject[k] for k in keys)
+            self.push(values)
+        except KeyError:
+            self.push(None)
+
+    def match_class_op(self, argval, arg) -> None:
+        kwnames = self.pop()
+        type_ = self.pop()
+        subject = self.top()
+        if not isinstance(subject, type_):
+            self.push(None)
+            return
+        match_args = getattr(type_, '__match_args__', ())
+        attrs = []
+        try:
+            for i in range(arg):
+                if i < len(match_args):
+                    attrs.append(getattr(subject, match_args[i]))
+                else:
+                    self.push(None)
+                    return
+            for kw in kwnames:
+                attrs.append(getattr(subject, kw))
+        except AttributeError:
+            self.push(None)
+            return
+        self.push(tuple(attrs))
+
+    def check_eg_match_op(self, argval, arg) -> None:
+        match_type = self.pop()
+        exc_value = self.pop()
+        if hasattr(exc_value, 'split'):
+            match, rest = exc_value.split(match_type)
+        elif isinstance(exc_value, BaseException):
+            if isinstance(exc_value, match_type):
+                match, rest = exc_value, None
+            else:
+                match, rest = None, exc_value
+        else:
+            match, rest = None, exc_value
+        self.push(rest)
+        self.push(match)
+
+    def call_intrinsic_2_op(self, argval, arg) -> None:
+        value1 = self.pop()
+        value2 = self.pop()
+        if arg == 1:  # INTRINSIC_PREP_RERAISE_STAR
+            orig = value2
+            excs = value1
+            raised = [e for e in excs if e is not None]
+            if not raised:
+                self.push(None)
+            else:
+                try:
+                    result = BaseExceptionGroup(
+                        orig.args[0] if orig and orig.args else 'error', raised
+                    )
+                    self.push(result)
+                except Exception:
+                    self.push(raised[0] if raised else None)
+        else:
+            self.push(value2)
+
     def resume_generator(self) -> tp.Any:
         if self._generator_finished:
             return None
@@ -972,17 +1195,28 @@ class Frame:
             self._yield_value = None
 
         while self.nam_instruction != -1:
-
+            tmp = self.nam_instruction
             ins, self.nam_instruction = self.ins_map[self.nam_instruction]
-
-            # print('gen', ins.opname, ins.argval, ins.arg)
-            # print(len(self.data_stack), self.data_stack)
 
             if ins.opname == 'YIELD_VALUE':
                 self._waiting_for_send = True
                 return self.pop()
 
-            getattr(self, ins.opname.lower() + "_op")(ins.argval, ins.arg)
+            try:
+                getattr(self, ins.opname.lower() + "_op")(ins.argval, ins.arg)
+            except BaseException as e:
+                self.nam_instruction = tmp
+                handler, depth, lasti = self.find_exception_handler(e)
+                if handler is None:
+                    raise
+                self.last_exception = e #pyrefly: ignore
+                if len(self.data_stack) > depth:
+                    self.data_stack = self.data_stack[:depth]
+                if lasti:
+                    self.push(tmp)
+                self.push(e)
+                self.jump(handler)
+                continue
 
         self._generator_finished = True
         return self.return_value
@@ -1025,11 +1259,14 @@ class Generator:
 
         if not self.started:
             self.started = True
-            self.frame.nam_instruction = 0
+            self.frame.return_value = None
 
         self.frame._yield_value = val
 
-        result = self.frame.resume_generator()
+        try:
+            result = self.frame.resume_generator()
+        except StopIteration as e:
+            raise RuntimeError("generator raised StopIteration") from e
 
         if self.frame._generator_finished:
             self._exhausted = True
@@ -1048,17 +1285,35 @@ class Generator:
         self.closed = True
         self.frame._generator_finished = True
 
+    def __aiter__(self):
+        return self
+
+    def __anext__(self):
+        async def _next():
+            try:
+                return self.send(None)
+            except StopIteration:
+                raise StopAsyncIteration
+        return _next()
+
 
 def __build_class__(func, name, *bases, **kwds):
-    namespace = {}
 
-    func(namespace)
+    new_bases = []
+    for base in bases:
+        if hasattr(base, '__mro_entries__'):
+            new_bases.extend(base.__mro_entries__(bases))
+        else:
+            new_bases.append(base)
+    bases = tuple(new_bases)
+
     if 'metaclass' in kwds:
         metaclass = kwds.pop('metaclass')
     elif bases:
         metaclass = type(bases[0])
     else:
         metaclass = type
+
     for base in bases:
         base_meta = type(base)
         if issubclass(metaclass, base_meta):
@@ -1070,11 +1325,26 @@ def __build_class__(func, name, *bases, **kwds):
                 "metaclass conflict: the metaclass of a derived class "
                 "must be a (non-strict) subclass of the metaclasses of all its bases"
             )
+
+    if hasattr(metaclass, '__prepare__'):
+        namespace = metaclass.__prepare__(name, bases, **kwds)
+    else:
+        namespace = {}
+
+    func(namespace)
     cls = metaclass(name, bases, namespace, **kwds)
     return cls
 
 
 class Function:
+    __slots__ = (
+        'code', 'has_var_positional', 'has_var_keyword', 'is_generator',
+        'num_regular_args', 'kwonly_count', '_globals_ref', '__builtins_ref__',
+        '__name__', '__qualname__', '__closure__', '__defaults__', '__code__',
+        '__globals__', '__kwdefaults__', '__annotations__',
+        '__dict__',
+    )
+
     def __init__(self, argval, arg, frame: Frame):
         if argval is None:
             argval = 0
@@ -1085,9 +1355,21 @@ class Function:
         defaults = None
         self.code = frame.pop()
         code = self.code
+        flags = argval if argval is not None else 0
+        if flags & 0x08:
+            closure = frame.pop()
+            if not isinstance(closure, tuple):
+                closure = tuple(closure)
+        if flags & 0x04:
+            annotations = frame.pop()
+        if flags & 0x02:
+            kwdefaults = frame.pop()
+        if flags & 0x01:
+            defaults = frame.pop()
         self.has_var_positional = bool(code.co_flags & 0x04)
         self.has_var_keyword = bool(code.co_flags & 0x08)
         self.is_generator = bool(code.co_flags & 0x20)
+        self.is_coroutine = bool(code.co_flags & 0x80)
 
         self.num_regular_args = code.co_argcount
         self.kwonly_count = getattr(code, 'co_kwonlyargcount', 0)
@@ -1108,8 +1390,10 @@ class Function:
             code.co_consts[0], str) else None
 
     def __call__(self, *call_args, **call_kwargs):
-        is_class_body = (len(call_args) == 1 and isinstance(
-            call_args[0], dict) and not call_kwargs)
+        is_class_body = (self.__code__.co_argcount == 0
+                         and len(call_args) == 1
+                         and isinstance(call_args[0], dict)
+                         and not call_kwargs)
 
         if is_class_body:
             f_locals = call_args[0]
@@ -1137,6 +1421,16 @@ class Function:
 
         if is_class_body:
             return call_args[0]
+
+        if self.is_coroutine and isinstance(rez, Generator):
+            vm_gen = rez
+
+            @types.coroutine
+            def _wrap():
+                return (yield from vm_gen)
+
+            return _wrap()
+
         return rez
 
     def __get__(self, instance, owner):
