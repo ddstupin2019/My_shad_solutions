@@ -1,0 +1,25 @@
+from sqlalchemy import Column, Integer, String, DateTime, Table, ForeignKey
+from sqlalchemy.orm import relationship
+
+from .base import Base
+
+
+UserTrip = Table(
+    'users_trips', Base.metadata,
+    Column('user_id', ForeignKey('users.user_id'), primary_key=True),
+    Column('trip_id', ForeignKey('trips.trip_id'), primary_key=True)
+)
+
+
+class Trip(Base):  # type: ignore
+    __tablename__ = 'trips'
+
+    trip_id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=False)
+    created_timestamp = Column(DateTime,)
+
+    users = relationship('User', secondary=UserTrip, back_populates='trips')
+
+    events = relationship('Event', back_populates='trip')
+    summaries = relationship('Summary', back_populates='trip')
