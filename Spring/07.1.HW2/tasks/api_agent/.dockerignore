@@ -1,0 +1,16 @@
+.git
+.venv
+.uv-cache
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+api_agent.egg-info
+app.db
+db.sqlite*
+.env
+Dockerfile
+docker-compose.yml

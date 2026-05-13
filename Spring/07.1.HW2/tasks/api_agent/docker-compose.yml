@@ -1,0 +1,14 @@
+services:
+  api-agent:
+    build: .
+    container_name: api-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    volumes:
+      - api-agent-data:/app/data
+
+volumes:
+  api-agent-data:
